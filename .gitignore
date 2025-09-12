@@ -1,0 +1,23 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.eggs/
+.build/
+dist/
+.env
+.venv
+venv/
+ENV/
+
+# Logs / reports (keep CSV locally; don’t commit your private hits)
+*.log
+*hits_log.csv
+report.md
