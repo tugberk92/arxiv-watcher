@@ -20,7 +20,7 @@ Examples:
 import argparse
 import csv
 import datetime as dt
-import pathlib
+from pathlib import Path
 import re
 import subprocess
 import urllib.request
@@ -29,10 +29,38 @@ from urllib.parse import urlencode
 import sys
 import shutil
 import getpass
+import os
 import textwrap
-
+import json
 
 ARXIV_API = "http://export.arxiv.org/api/query"
+
+STATE_PATH = Path.home() / ".local" / "share" / "arxiv_watcher" / "state.json"
+
+def _load_state():
+    p = STATE_PATH
+    if not p.exists():
+        return {"last_success_iso": None, "seen_ids": []}
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return {"last_success_iso": None, "seen_ids": []}
+
+def _save_state(state):
+    p = STATE_PATH
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+
+def _now_utc():
+    return dt.datetime.now(dt.timezone.utc)
+
+def _parse_iso(s):
+    if not s:
+        return None
+    try:
+        return dt.datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except Exception:
+        return None
 
 def format_authors(authors, max_authors=6):
     """Return 'A. First, B. Second, … et al.'; keeps full list for CSV."""
@@ -69,6 +97,8 @@ PLIST_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
     <integer>__MINUTE__</integer>
   </dict>
 
+__START_INTERVAL_BLOCK__
+
   <key>ProgramArguments</key>
   <array>
     <string>__PYTHON__</string>
@@ -85,8 +115,13 @@ __NOTIFY_ARG__
   <key>StandardErrorPath</key>
   <string>__LOG_DIR__/arxiv_watcher.err</string>
 
-  <key>KeepAlive</key>
+  <!-- Run immediately at load -->
+  <key>RunAtLoad</key>
   <true/>
+
+  <!-- Don’t respawn endlessly; only run on schedule + StartInterval -->
+  <key>KeepAlive</key>
+  <false/>
 </dict>
 </plist>
 """
@@ -110,15 +145,22 @@ def build_plist(
     python_path=None,
     script_path=None,
     log_dir=None,
+    backoff_interval=3600,  # seconds; 0 disables StartInterval
 ):
     # Resolve defaults
-    script_path = str(pathlib.Path(script_path or __file__).resolve())
+    script_path = str(Path(script_path or __file__).resolve())
     python_path = python_path or sys.executable
-    out_dir = str(pathlib.Path(out_dir or (pathlib.Path.home() / "Papers" / "arxiv_hits")).expanduser().resolve())
-    log_dir = str(pathlib.Path(log_dir or (pathlib.Path.home() / "Library" / "Logs")).expanduser().resolve())
+    out_dir = str(Path(out_dir or (Path.home() / "Papers" / "arxiv_hits")).expanduser().resolve())
+    log_dir = str(Path(log_dir or (Path.home() / "Library" / "Logs")).expanduser().resolve())
     hour, minute = _parse_hhmm(schedule_hhmm)
 
-    notify_arg = "    <string>--notify</string>\n" if notify else ""
+    notify_arg = "      <string>--notify</string>\n" if notify else ""
+
+    if backoff_interval and backoff_interval > 0:
+        start_interval_block = f"""  <key>StartInterval</key>
+  <integer>{int(backoff_interval)}</integer>"""
+    else:
+        start_interval_block = ""
 
     xml = (
         PLIST_TEMPLATE
@@ -131,85 +173,46 @@ def build_plist(
         .replace("__OUT_DIR__", out_dir)
         .replace("__LOG_DIR__", log_dir)
         .replace("__NOTIFY_ARG__", notify_arg)
+        .replace("__START_INTERVAL_BLOCK__", start_interval_block)
     )
 
-    # Save next to the script by default
     plist_name = f"{label}.plist"
-    plist_path = pathlib.Path.cwd() / plist_name
+    plist_path = Path.cwd() / plist_name
     plist_path.write_text(xml, encoding="utf-8")
     return str(plist_path)
 
 def install_plist(plist_path):
-    launch_agents = pathlib.Path.home() / "Library" / "LaunchAgents"
+    launch_agents = Path.home() / "Library" / "LaunchAgents"
     launch_agents.mkdir(parents=True, exist_ok=True)
-    dest = launch_agents / pathlib.Path(plist_path).name
+    dest = launch_agents / Path(plist_path).name
     shutil.copy2(plist_path, dest)
-    # load into launchd
-    subprocess.run(["launchctl", "unload", str(dest)], check=False)
-    subprocess.run(["launchctl", "load", str(dest)], check=True)
+
+    # Try to unload the old job; it's fine if it wasn't loaded
+    _ = subprocess.run(
+        ["launchctl", "bootout", f"gui/{os.getuid()}", str(dest)],
+        check=False, capture_output=True, text=True
+    )
+
+    # Load the new job
+    r = subprocess.run(
+        ["launchctl", "bootstrap", f"gui/{os.getuid()}", str(dest)],
+        check=False, capture_output=True, text=True
+    )
+    if r.returncode != 0:
+        raise RuntimeError(f"bootstrap failed: {r.stderr.strip()}")
+
     return str(dest)
 
-# --- IMPORTANT FIX: categories only (no keyword filtering at API level) ---
 DEFAULT_QUERY = (
     '(cat:hep-ex OR cat:hep-ph OR cat:hep-lat)'
     ' AND (all:kaon OR all:kaons OR all:"CKM" OR all:"Vus" OR all:"|V_us|"'
     ' OR all:NA62 OR all:"KOTO" OR all:"KOTO-II" OR all:KLEVER OR all:HIKE)'
 )
-"""
-# Regex patterns to catch typical strings in HEP kaon abstracts/titles (plain + LaTeX-friendly).
-REGEX_PATTERNS = [
-    r'\bkaon(s)?\b',
-    r'\bCKM\b',
-    r'\bV[_\s]?us\b|\|?V[_\s]?us\|?',            # Vus, |V_us|
-    r'\bNA62\b',
-    r'\bKOTO(-II)?\b',
-    r'\bKLEVER\b',
-    r'\bHIKE\b',
-    r'\bFLAG\b',   # Flavour Lattice Averaging Group
-    r'\bBNL-E865\b',
-    r'\bKLOE(?:-2)?\b',       # matches KLOE and KLOE-2
-    r'\bKTeV\b',              # KTeV is fine
-    r'\bISTRA\+',             # escape the +; don't put \b after it
-    r'\bNA48(?:/2)?\b',       # NA48 and NA48/2
-    # Neutral kaons: K_L, KL, K_S, KS
-    r'\bK[_ ]?L\b',
-    r'\bK[_ ]?S\b',
-    # Standard leptonic/semileptonic modes: Ke2, Kmu3, Ke4, and LaTeX subscripts
-    r'\bK[_\s]?(e|mu)(2|3|4)\b',
-    r'\bK(e|mu)(2|3|4)\b',
-    r'K_{\s*(e|\\?mu)\s*(2|3|4)\s*}',            # K_{e2}, K_{\mu3}
-    # Pion modes: Kpi0, Kpi2, Kpi3, Kpi4 (plain + LaTeX)
-    r'\bK[_\s]?pi(0|2|3|4)\b',
-    r'\bKpi(0|2|3|4)\b',
-    r'K_{\s*pi\s*(0|2|3|4)\s*}',
-    # Rare: K→πνν (handle nu and Greek ν)
-    r'\bKpi(?:nu|ν)(?:nu|ν)\b',                  # Kpinunu / Kpiνν
-    r'K_{\s*pi(?:nu|ν)(?:nu|ν)\s*}',             # K_{pi\nu\nu}
-    # Explicit decay arrow examples (accept pi or \pi)
-    r'\bK\+\s*->\s*\\?pi\+\s*\w*',               # K+ -> (\\?)pi+ ...
-    # Charges/superscripts like K^0, K^+, K^- (LaTeX style)
-    r'\bK\^\s*[-+0-9]',
-]
 
-# Famous kaon/CKM authors (weight these higher)
-AUTHOR_PATTERNS = [
-    r'Andreas\s+J(u|ü|ue)ttner',
-    r'Andrzej\s+Buras',
-    r'Gino\s+Isidori',
-    r'Yuval\s+Grossman',
-    r'Emmanuel\s+Stamou',
-    r'Thomas\s+Blum',
-    r'Marc\s+Knecht',
-    r'Marzia\s+Bordone',
-    r'Ryan\s+Hill',
-    r'Jack\s+Jenkins',
-    r'Martin\s+Gorbahn',
-]
-"""
 def _read_patterns_file(path):
     #Read non-empty, non-comment lines as regex patterns.
     pats = []
-    p = pathlib.Path(path).expanduser()
+    p = Path(path).expanduser()
     if not p.exists():
         print(f"ERROR: patterns file missing: {p}", file=sys.stderr)
         return []
@@ -221,16 +224,12 @@ def _read_patterns_file(path):
     return pats
 
 # Always load from external files
-REGEX_PATTERNS = _read_patterns_file(pathlib.Path(__file__).parent / "patterns" / "keywords.txt")
-AUTHOR_PATTERNS = _read_patterns_file(pathlib.Path(__file__).parent / "patterns" / "authors.txt")
+REGEX_PATTERNS = _read_patterns_file(Path(__file__).parent / "patterns" / "keywords.txt")
+AUTHOR_PATTERNS = _read_patterns_file(Path(__file__).parent / "patterns" / "authors.txt")
 
 if not REGEX_PATTERNS or not AUTHOR_PATTERNS:
     print("✖ No patterns loaded. Please edit patterns/keywords.txt and patterns/authors.txt")
     sys.exit(1)
-
-def _now_utc():
-    return dt.datetime.now(dt.timezone.utc)
-
 
 def build_url(query, start=0, max_results=100, sort_by="submittedDate", sort_order="descending"):
     params = {
@@ -260,8 +259,12 @@ def fetch_entries_paged(query, since_iso=None, max_per_page=100, max_pages=100):
     while page < max_pages:
         url = build_url(query, start=start, max_results=max_per_page,
                         sort_by=sort_key, sort_order="descending")
-        with urllib.request.urlopen(url) as resp:
-            data = resp.read()
+        try:
+            with urllib.request.urlopen(url) as resp:
+                data = resp.read()
+        except Exception as e:
+            # surface a sentinel so the caller knows it was partial
+            raise RuntimeError(f"network-error:{e}")
         root = ET.fromstring(data)
         ns = {"a": "http://www.w3.org/2005/Atom"}
         es = root.findall("a:entry", ns)
@@ -348,7 +351,7 @@ def notify_macos(title, subtitle, message):
 def download_pdf(url, out_dir, nice_name):
     if not url:
         return None
-    out_dir = pathlib.Path(out_dir)
+    out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     # sanitize filename
     safe = re.sub(r'[^A-Za-z0-9_.-]+', '_', nice_name)[:180]
@@ -366,10 +369,10 @@ def main():
     g = p.add_mutually_exclusive_group()
     g.add_argument("--hours", type=int, default=None, help="Lookback window (hours).")
     g.add_argument("--since", type=str, default=None, help="Since date YYYY-MM-DD (local date).")
-    p.add_argument("--out", type=str, default=str(pathlib.Path.home() / "Papers" / "arxiv_hits"))
+    p.add_argument("--out", type=str, default=str(Path.home() / "Papers" / "arxiv_hits"))
     p.add_argument("--max", type=int, default=150, help="Max results per page from API (100–200 ok).")
     p.add_argument("--notify", action="store_true", help="Show a macOS notification for each hit.")
-    p.add_argument("--csv", type=str, default=str(pathlib.Path.home() / "Papers" / "arxiv_hits" / "hits_log.csv"))
+    p.add_argument("--csv", type=str, default=str(Path.home() / "Papers" / "arxiv_hits" / "hits_log.csv"))
     p.add_argument("--dry", action="store_true", help="Do not download PDFs.")
         # --- plist builder/installer flags ---
     p.add_argument("--build-plist", action="store_true",
@@ -382,7 +385,10 @@ def main():
                    help="LaunchAgent label (used for plist filename).")
     p.add_argument("--hours-lookback", type=int, default=24,
                    help="Lookback window in hours for the LaunchAgent. Default: 24.")
-    p.add_argument("--logs-dir", type=str, default=str(pathlib.Path.home() / "Library" / "Logs"),
+    p.add_argument("--backoff-interval", type=int, default=3600,
+                   help="Extra periodic run in seconds via StartInterval (default: 3600). "
+                    "Use 0 to disable. Example: 1800 for every 30 minutes.")
+    p.add_argument("--logs-dir", type=str, default=str(Path.home() / "Library" / "Logs"),
                    help="Directory for stdout/stderr logs in the LaunchAgent.")
     p.add_argument("--no-notify", action="store_true", help="Disable notifications in LaunchAgent plist.")
     p.add_argument("--print", dest="print_n", type=int, default=50,
@@ -409,81 +415,107 @@ def main():
             out_dir=args.out,
             notify=(not args.no_notify),
             python_path=sys.executable,
-            script_path=str(pathlib.Path(__file__).resolve()),
+            script_path=str(Path(__file__).resolve()),
             log_dir=args.logs_dir,
+            backoff_interval=args.backoff_interval,
         )
         print(f"Built plist: {plist_path}")
         if args.install_plist:
             dest = install_plist(plist_path)
             print(f"Installed & loaded: {dest}")
-            print("Tip: run `launchctl start {}` to trigger a run now.".format(args.label))
+            print("Tip: run `launchctl kickstart -k gui/$(id -u)/{}` to trigger a run now.".format(args.label))
         return
+    state = _load_state()
+
+    dynamic_hours = None
+    if args.hours is None and not args.since:
+        # compute hours since last success (clamped to [23, 25])
+        last = _parse_iso(state.get("last_success_iso"))
+        if last is None:
+            dynamic_hours = 24
+        else:
+            delta_h = (_now_utc() - last).total_seconds() / 3600.0
+            # round to nearest hour and clamp
+            dynamic_hours = max(23, min(25, int(round(delta_h))))
+        # behave as if user supplied --hours
+        args.hours = dynamic_hours
 
     since_iso = None
     if args.since:
         # Interpret as 00:00 at the given date; stored as UTC-style ISO string.
         since_iso = f"{args.since}T00:00:00+00:00"
-
-    if since_iso:
-        entries_iter = fetch_entries_paged(
-            DEFAULT_QUERY, since_iso=since_iso, max_per_page=args.max, max_pages=500
-        )
-    else:
-        # hours mode or default: fetch a few pages and filter by hours if provided
-        entries_iter = fetch_entries_paged(
-            DEFAULT_QUERY, since_iso=None, max_per_page=args.max, max_pages=3
-        )
-
+    seen_ids_run = set()
     hits = []
-    for e in entries_iter:
-        if args.hours is not None:
-            if not within_hours(e.get("updated", ""), args.hours):
+    try:
+        entries_iter = fetch_entries_paged(
+            DEFAULT_QUERY,
+            since_iso=since_iso if args.since else None,
+            max_per_page=args.max,
+            max_pages=500 if args.since else 3
+        )
+        seen_ids_state = set(state.get("seen_ids", []))
+        for e in entries_iter:
+            if args.hours is not None:
+                if not within_hours(e.get("updated", ""), args.hours):
+                    continue
+            # derive arXiv ID and skip duplicates
+            arxiv_id = (e.get("link", "").rstrip("/").split("/")[-1]) or None
+            if not arxiv_id:
                 continue
-        text = (e.get("title", "") + "\n" + e.get("summary", ""))
-        kscore = keyword_score(text)
-        ascore = author_score(e.get("authors", []))
-        score = kscore + ascore
-        if score >= args.min_score:
-            hits.append((score, e, kscore, ascore))
+            if arxiv_id in seen_ids_state or arxiv_id in seen_ids_run:
+                continue
+
+            text = (e.get("title", "") + "\n" + e.get("summary", ""))
+            kscore = keyword_score(text)
+            ascore = author_score(e.get("authors", []))
+            score = kscore + ascore
+            if score >= 1:
+                hits.append((score, e, kscore, ascore, arxiv_id))
+                seen_ids_run.add(arxiv_id)
+    except RuntimeError as ex:
+        if str(ex).startswith("network-error:"):
+            print(f"⚠️ Network error while fetching arXiv: {ex}", file=sys.stderr)
+            network_failed = True
+        else:
+            raise
+    else:
+        network_failed = False
 
     # Sort primarily by total score (desc). The API feed is already newest-first.
     hits.sort(key=lambda x: (-x[0],))
 
-    # Prepare CSV
-    csv_path = pathlib.Path(args.csv)
-    csv_path.parent.mkdir(parents=True, exist_ok=True)
-    new_file = not csv_path.exists()
-    with open(csv_path, "a", newline="") as f:
+    # --- Full log (kept as-is) ---
+    csv_path_full = Path(args.csv).expanduser().resolve()
+    csv_path_full.parent.mkdir(parents=True, exist_ok=True)
+    new_file_full = not csv_path_full.exists()
+    
+    with open(csv_path_full, "a", newline="") as f:
         w = csv.writer(f)
-        if new_file:
+        if new_file_full:
             w.writerow([
                 "timestamp", "score_total", "score_keywords", "score_authors",
                 "title", "link", "pdf_saved_or_url", "updated", "categories", "authors"
             ])
-        for score, e, kscore, ascore in hits:
+        for score, e, kscore, ascore, arxiv_id in hits:
             saved_pdf = None
             if not args.dry:
-                # Try to derive a name from arXiv ID in link
-                arxiv_id = (e.get("link", "").rstrip("/").split("/")[-1]) or "arxiv"
                 base_name = f'{arxiv_id}_{e.get("title", "")[:80]}'
                 saved_pdf = download_pdf(e.get("pdf"), args.out, base_name)
+            # shorten author list here
+            authors_short = format_authors(e.get("authors", []), max_authors=3)
             w.writerow([
                 dt.datetime.now().isoformat(), score, kscore, ascore,
                 e.get("title", ""), e.get("link", ""), saved_pdf or e.get("pdf", ""),
-                e.get("updated", ""), ";".join(e.get("categories", [])), " ; ".join(e.get("authors", []))
+                e.get("updated", ""), ";".join(e.get("categories", [])), authors_short
             ])
             if args.notify:
-                subtitle = f"score {score} (kw {kscore} + au {ascore})"
-                arxiv_id = (e.get("link", "").rstrip("/").split("/")[-1]) or "arxiv"
+                subtitle = f"score {score} (kw{kscore} + au{ascore})"
                 message = f"[{arxiv_id}] {e.get('title', '')}"
                 notify_macos("arXiv hit", subtitle, message)
 
-
-
-
     # Print concise report
     # --- Pretty console report (replace your old print block with this) ---
-    
+
     scope_str = (
         f" since {args.since}" if args.since
         else f" in the last {args.hours}h" if args.hours is not None
@@ -499,7 +531,7 @@ def main():
     
     # cap console list for sanity; change 50 if you like
     to_show = hits if args.print_n == -1 else hits[:args.print_n]
-    for score, e, kscore, ascore in to_show:
+    for score, e, kscore, ascore, arxiv_id in to_show:
         title = e['title']
 
         # optionally truncate very long titles for console
@@ -534,7 +566,7 @@ def main():
 
     # Optional Markdown report
     if args.report_md:
-        md_path = pathlib.Path(args.report_md).expanduser().resolve()
+        md_path = Path(args.report_md).expanduser().resolve()
         md_path.parent.mkdir(parents=True, exist_ok=True)
         header_md = (
             f"# arXiv Kaon Watch — {dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}\n\n"
@@ -542,6 +574,19 @@ def main():
         )
         md_path.write_text(header_md + "\n".join(lines_for_md) + "\n", encoding="utf-8")
         print(f"Wrote Markdown report to: {md_path}")
+
+    # Persist dedupe IDs always; only advance last_success on full success
+    merged = list(dict.fromkeys(state.get("seen_ids", []) + list(seen_ids_run)))
+    if len(merged) > 5000:
+        merged = merged[-5000:]
+    state["seen_ids"] = merged
+    
+    if not network_failed:
+        state["last_success_iso"] = _now_utc().isoformat()
+    else:
+        print("⚠️ Network error: kept seen_ids so we don't re-notify; last_success unchanged.", file=sys.stderr)
+
+    _save_state(state)
 
 
 if __name__ == "__main__":

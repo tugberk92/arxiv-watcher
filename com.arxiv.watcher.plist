@@ -8,21 +8,24 @@
 
   <key>StartCalendarInterval</key>
   <dict>
-	<key>Hour</key>
-	<integer>9</integer>
-	<key>Minute</key>
-	<integer>30</integer>
+    <key>Hour</key>
+    <integer>9</integer>
+    <key>Minute</key>
+    <integer>30</integer>
   </dict>
+
+  <key>StartInterval</key>
+  <integer>3600</integer>
 
   <key>ProgramArguments</key>
   <array>
-	<string>/Users/takmete/miniforge3/envs/ml_arm64/bin/python3.10</string>
-	<string>/Users/takmete/arxiv-watcher/arxiv_watcher.py</string>
-	<string>--hours</string>
-	<string>24</string>
-	<string>--out</string>
-	<string>/Users/takmete/Papers/arxiv_hits</string>
-	  <string>--notify</string>
+    <string>/Users/takmete/miniforge3/envs/ml_arm64/bin/python3.10</string>
+    <string>/Users/takmete/arxiv-watcher/arxiv_watcher.py</string>
+    <string>--hours</string>
+    <string>24</string>
+    <string>--out</string>
+    <string>/Users/takmete/Papers/arxiv_hits</string>
+      <string>--notify</string>
 
   </array>
 
@@ -31,7 +34,12 @@
   <key>StandardErrorPath</key>
   <string>/Users/takmete/Library/Logs/arxiv_watcher.err</string>
 
-  <key>KeepAlive</key>
+  <!-- Run immediately at load -->
+  <key>RunAtLoad</key>
   <true/>
+
+  <!-- Don’t respawn endlessly; only run on schedule + StartInterval -->
+  <key>KeepAlive</key>
+  <false/>
 </dict>
 </plist>

@@ -2,7 +2,7 @@
 
 *A daily arXiv butler for kaon physics (and friends).*
 
-This script checks **arXiv** for new papers every day and flags those that are relevant to **kaon physics, CKM, NA62, KOTO, KLEVER, HIKE, KLOE, KTeV, NA48, BESIII**, and related experiments.	
+This script checks **arXiv** for new papers every day and flags those that are relevant to **kaon physics, CKM, NA62, KOTO, KLEVER, HIKE, KLOE, KTeV, NA48, BESIII**, and related experiments.  
 It combines **keyword matches** and **known author names** to catch interesting preprints, downloads PDFs, logs results, and can even notify you via macOS Notification Center.
 
 On macOS you can schedule it automatically at a fixed time (e.g. 09:30 every morning) using a LaunchAgent plist. The script can even build and install that plist for you.
@@ -60,34 +60,41 @@ On macOS you can schedule it automatically at a fixed time (e.g. 09:30 every mor
 
 ### Options
 ```
---hours N			 Look back N hours (default: 24)
---since YYYY-MM-DD	 Look back to a given date
---out PATH			 Output folder for PDFs (default: ~/Papers/arxiv_hits)
---csv PATH			 Log file (CSV, default: hits_log.csv)
---notify			 Send macOS notification on hits
---dry				 Don’t download PDFs, just list them
---build-plist		 Generate a LaunchAgent plist for automatic runs
---install-plist		 Install the plist into ~/Library/LaunchAgents
---schedule HH:MM	 Time of day for automatic run (with --install-plist)
+--hours N            Look back N hours (default: 24)
+--since YYYY-MM-DD   Look back to a given date
+--out PATH           Output folder for PDFs (default: ~/Papers/arxiv_hits)
+--csv PATH           Log file (CSV, default: hits_log.csv)
+--notify             Send macOS notification on hits
+--dry                Don’t download PDFs, just list them
+--build-plist        Generate a LaunchAgent plist for automatic runs
+--install-plist      Install the plist into ~/Library/LaunchAgents
+--schedule HH:MM     Time of day for automatic run (with --install-plist)
 ```
 
 ---
 
 ## Automatic daily run for macOS
 
-- Build a plist so that you can get messages in the notification center (default: run at 09:30 am daily for the last 24h, notify on hits):	
+- Build a plist so that you can get messages in the notification center (default: run at 09:30 am daily for the last 24h, notify on hits):  
   ```bash
   python3 arxiv_watcher.py --build-plist
   ```
 
 - Build and install it:  
   ```bash
-  python3 arxiv_watcher.py --build-plist --install-plist --schedule 09:30 --out ~/Papers/arxiv_hits
+  python3 arxiv_watcher.py \
+    --build-plist \
+    --install-plist \
+    --schedule 09:30 \
+    --hours-lookback 24 \
+    --backoff-interval 3600 \
+    --out ~/Papers/arxiv_hits \
+    --dry
   ```
 
 - Trigger it immediately:  
   ```bash
-  launchctl start com.arxiv.watcher
+  launchctl kickstart -k gui/$(id -u)/com.arxiv.watcher
   ```
 
 - Confirm it's loaded (you should see `com.arxiv.watcher` listed):
@@ -105,6 +112,7 @@ On macOS you can schedule it automatically at a fixed time (e.g. 09:30 every mor
   Found 2 matching entries in the last 24h.
   [2 = kw2+au0] ...
   ```
+
 - Check your schedule (you will see a block starting with `StartCalendarInterval` then your `Hour/Minute`):
   ```bash
   cat ~/Library/LaunchAgents/com.arxiv.watcher.plist
@@ -114,6 +122,43 @@ On macOS you can schedule it automatically at a fixed time (e.g. 09:30 every mor
   ```bash
   arXiv hit — score 3 (kw 2 + au 1) — [arXiv:2507.13445] Paper title
   ```
+
+- Sanity check:
+  ```bash
+  plutil -lint ~/Library/LaunchAgents/com.arxiv.watcher.plist
+  ```
+
+- Uninstall (remove the old job completely):
+  ```bash
+  # 1) Stop & unload (ignore errors if not loaded)
+  launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.arxiv.watcher.plist 2>/dev/null || true
+  
+  # 2) Delete the LaunchAgent plist
+  rm -f ~/Library/LaunchAgents/com.arxiv.watcher.plist
+  
+  # 3) Remove old logs
+  rm -f ~/Library/Logs/arxiv_watcher.out ~/Library/Logs/arxiv_watcher.err
+  
+  # 4) (optional) reset state so dedupe/timestamp starts fresh
+  rm -f ~/.local/share/arxiv_watcher/state.json
+  
+  # 5) Confirm it’s truly gone (should show nothing)
+  launchctl print gui/$(id -u)/com.arxiv.watcher 2>/dev/null || echo "No such service (good)."
+  ```
+
+- Fresh re-installation after uninstallation:
+  ```bash
+  python3 arxiv_watcher.py \
+    --build-plist \
+    --install-plist \
+    --schedule 09:30 \
+    --hours-lookback 24 \
+    --backoff-interval 3600 \
+    --out ~/Papers/arxiv_hits \
+    --dry
+  
+  launchctl kickstart -k gui/$(id -u)/com.arxiv.watcher
+  ```
 ---
 
 ## Example output
@@ -122,9 +167,9 @@ On macOS you can schedule it automatically at a fixed time (e.g. 09:30 every mor
 Found 5 matching entries in the last 24h.
 
 [4 = kw2+au2] CP violation in K→μ+μ− with and without time dependence
-	 http://arxiv.org/abs/2507.13445v1
-	 PDF: http://arxiv.org/pdf/2507.13445v1
-	 Authors: G. D’Ambrosio, Y. Grossman, T. Kitahara, D. Martínez Santos
+     http://arxiv.org/abs/2507.13445v1
+     PDF: http://arxiv.org/pdf/2507.13445v1
+     Authors: G. D’Ambrosio, Y. Grossman, T. Kitahara, D. Martínez Santos
 ```
 
 ---
