@@ -155,6 +155,7 @@ DEFAULT_QUERY = (
     ' AND (all:kaon OR all:kaons OR all:"CKM" OR all:"Vus" OR all:"|V_us|"'
     ' OR all:NA62 OR all:"KOTO" OR all:"KOTO-II" OR all:KLEVER OR all:HIKE)'
 )
+"""
 # Regex patterns to catch typical strings in HEP kaon abstracts/titles (plain + LaTeX-friendly).
 REGEX_PATTERNS = [
     r'\bkaon(s)?\b',
@@ -194,7 +195,6 @@ REGEX_PATTERNS = [
 AUTHOR_PATTERNS = [
     r'Andreas\s+J(u|ü|ue)ttner',
     r'Andrzej\s+Buras',
-    r'Augusto\s+Ceccucci',
     r'Gino\s+Isidori',
     r'Yuval\s+Grossman',
     r'Emmanuel\s+Stamou',
@@ -205,7 +205,28 @@ AUTHOR_PATTERNS = [
     r'Jack\s+Jenkins',
     r'Martin\s+Gorbahn',
 ]
+"""
+def _read_patterns_file(path):
+    #Read non-empty, non-comment lines as regex patterns.
+    pats = []
+    p = pathlib.Path(path).expanduser()
+    if not p.exists():
+        print(f"ERROR: patterns file missing: {p}", file=sys.stderr)
+        return []
+    for raw in p.read_text(encoding="utf-8").splitlines():
+        s = raw.strip()
+        if not s or s.startswith("#"):
+            continue
+        pats.append(s)
+    return pats
 
+# Always load from external files
+REGEX_PATTERNS = _read_patterns_file(pathlib.Path(__file__).parent / "patterns" / "keywords.txt")
+AUTHOR_PATTERNS = _read_patterns_file(pathlib.Path(__file__).parent / "patterns" / "authors.txt")
+
+if not REGEX_PATTERNS or not AUTHOR_PATTERNS:
+    print("✖ No patterns loaded. Please edit patterns/keywords.txt and patterns/authors.txt")
+    sys.exit(1)
 
 def _now_utc():
     return dt.datetime.now(dt.timezone.utc)

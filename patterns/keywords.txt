@@ -1,0 +1,25 @@
+r'\bkaon(s)?\b
+\bCKM\b
+\bV[_\s]?us\b|\|?V[_\s]?us\|?
+\bNA62\b
+\bKOTO(-II)?\b
+\bKLEVER\b
+\bHIKE\b
+\bFLAG\b
+\bBNL-E865\b
+\bKLOE(?:-2)?\b
+\bKTeV\b
+\bISTRA\+
+\bNA48(?:/2)?\b
+\bK[_ ]?L\b
+\bK[_ ]?S\b
+\bK[_\s]?(e|mu)(2|3|4)\b
+\bK(e|mu)(2|3|4)\b
+K_{\s*(e|\\?mu)\s*(2|3|4)\s*}
+\bK[_\s]?pi(0|2|3|4)\b
+\bKpi(0|2|3|4)\b
+K_{\s*pi\s*(0|2|3|4)\s*}
+\bKpi(?:nu|ν)(?:nu|ν)\b
+K_{\s*pi(?:nu|ν)(?:nu|ν)\s*}
+\bK\+\s*->\s*\\?pi\+\s*\w*
+\bK\^\s*[-+0-9]

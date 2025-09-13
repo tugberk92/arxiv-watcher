@@ -1,0 +1,11 @@
+Andreas\s+J(u|ü|ue)ttner
+Andrzej\s+Buras
+Gino\s+Isidori
+Yuval\s+Grossman
+Emmanuel\s+Stamou
+Thomas\s+Blum
+Marc\s+Knecht
+Marzia\s+Bordone
+Ryan\s+Hill
+Jack\s+Jenkins
+Martin\s+Gorbahn
