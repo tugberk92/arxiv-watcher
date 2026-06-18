@@ -1,0 +1,14 @@
+# Optional: extra arXiv API query clauses, OR-ed into the server-side search.
+#
+# By DEFAULT this file is empty, so the watcher only fetches papers matching the
+# focused CORE_TERMS in arxiv_watcher.py (kaon / CKM / fixed-target & precision
+# experiments). That keeps the volume low.
+#
+# If you want a wider net, uncomment / add one clause per line. Examples:
+#   all:"profile likelihood"
+#   all:unfolding
+#   cat:physics.ins-det
+#   cat:physics.data-an
+#
+# WARNING: broad clauses (e.g. cat:cs.LG, cat:stat.ML, all:"machine learning")
+# will pull in a LOT of papers every day. Add them only if you really want that.

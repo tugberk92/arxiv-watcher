@@ -21,3 +21,7 @@ ENV/
 *.log
 *hits_log.csv
 report.md
+*.html
+
+# Machine-specific generated launchers (paths baked in by setup.sh)
+launchers/

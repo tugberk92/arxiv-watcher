@@ -19,10 +19,10 @@
 
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/takmete/miniforge3/envs/ml_arm64/bin/python3.10</string>
+    <string>/Users/takmete/miniforge3/bin/python3</string>
     <string>/Users/takmete/arxiv-watcher/arxiv_watcher.py</string>
-    <string>--hours</string>
-    <string>24</string>
+    <string>--every-hours</string>
+    <string>20</string>
     <string>--out</string>
     <string>/Users/takmete/Papers/arxiv_hits</string>
       <string>--notify</string>

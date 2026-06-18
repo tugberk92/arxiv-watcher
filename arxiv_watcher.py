@@ -24,6 +24,7 @@ from pathlib import Path
 import re
 import subprocess
 import urllib.request
+import urllib.error
 import xml.etree.ElementTree as ET
 from urllib.parse import urlencode
 import sys
@@ -32,8 +33,15 @@ import getpass
 import os
 import textwrap
 import json
+import time
+import html as html_lib
 
 ARXIV_API = "http://export.arxiv.org/api/query"
+
+# arXiv asks for a descriptive User-Agent and a few seconds between requests.
+# https://info.arxiv.org/help/api/tou.html
+USER_AGENT = "arxiv-watcher/1.1 (+https://github.com/yourname/arxiv-watcher)"
+REQUEST_PAUSE_S = 3.0  # polite delay between paged requests
 
 STATE_PATH = Path.home() / ".local" / "share" / "arxiv_watcher" / "state.json"
 
@@ -103,8 +111,8 @@ __START_INTERVAL_BLOCK__
   <array>
     <string>__PYTHON__</string>
     <string>__SCRIPT__</string>
-    <string>--hours</string>
-    <string>__HOURS_LOOKBACK__</string>
+    <string>--every-hours</string>
+    <string>__EVERY_HOURS__</string>
     <string>--out</string>
     <string>__OUT_DIR__</string>
 __NOTIFY_ARG__
@@ -139,7 +147,7 @@ def _parse_hhmm(s):
 def build_plist(
     schedule_hhmm="09:30",
     label="com.arxiv.watcher",
-    hours_lookback=24,
+    every_hours=20,
     out_dir=None,
     notify=True,
     python_path=None,
@@ -169,7 +177,7 @@ def build_plist(
         .replace("__MINUTE__", str(minute))
         .replace("__PYTHON__", python_path)
         .replace("__SCRIPT__", script_path)
-        .replace("__HOURS_LOOKBACK__", str(hours_lookback))
+        .replace("__EVERY_HOURS__", str(every_hours))
         .replace("__OUT_DIR__", out_dir)
         .replace("__LOG_DIR__", log_dir)
         .replace("__NOTIFY_ARG__", notify_arg)
@@ -203,11 +211,27 @@ def install_plist(plist_path):
 
     return str(dest)
 
-DEFAULT_QUERY = (
-    '(cat:hep-ex OR cat:hep-ph OR cat:hep-lat)'
-    ' AND (all:kaon OR all:kaons OR all:"CKM" OR all:"Vus" OR all:"|V_us|"'
-    ' OR all:NA62 OR all:"KOTO" OR all:"KOTO-II" OR all:KLEVER OR all:HIKE)'
-)
+# Server-side filter. Kept deliberately focused (kaon / CKM / fixed-target &
+# precision-frontier experiments) so volume stays low. Statistics / analysis
+# interests are handled as *keyword groups* that rank & label papers within this
+# set, rather than as broad categories that would flood the inbox.
+# Add your own OR-clauses in patterns/extra_query.txt to widen the net.
+CORE_TERMS = [
+    'all:kaon', 'all:kaons', 'all:"CKM"', 'all:Cabibbo',
+    'all:"Vus"', 'all:"Vud"', 'all:"|V_us|"',
+    'all:NA62', 'all:"KOTO"', 'all:"KOTO-II"', 'all:KLEVER', 'all:HIKE',
+    'all:NA48', 'all:NA64', 'all:PIONEER', 'all:PIENU',
+    'all:"lepton universality"', 'all:"rare kaon"',
+]
+DEFAULT_CATEGORIES = '(cat:hep-ex OR cat:hep-ph OR cat:hep-lat)'
+
+
+def build_query(extra_terms=None):
+    terms = list(CORE_TERMS) + list(extra_terms or [])
+    return f"{DEFAULT_CATEGORIES} AND ({' OR '.join(terms)})"
+
+
+DEFAULT_QUERY = build_query()
 
 def _read_patterns_file(path):
     #Read non-empty, non-comment lines as regex patterns.
@@ -223,9 +247,60 @@ def _read_patterns_file(path):
         pats.append(s)
     return pats
 
+
+def _read_grouped_patterns(path):
+    """Read keyword patterns bucketed by ``## group`` headers.
+
+    - ``## name``  starts a new group (everything until the next header).
+    - ``#  ...``   is a comment (ignored).
+    - anything else is a regex pattern, assigned to the current group.
+
+    Patterns before the first header land in the ``general`` group, so existing
+    flat keyword files keep working unchanged.
+    Returns an ordered dict: {group_name: [patterns, ...]}.
+    """
+    groups = {}
+    current = "general"
+    p = Path(path).expanduser()
+    if not p.exists():
+        print(f"ERROR: patterns file missing: {p}", file=sys.stderr)
+        return groups
+    for raw in p.read_text(encoding="utf-8").splitlines():
+        s = raw.strip()
+        if not s:
+            continue
+        if s.startswith("##"):
+            current = s.lstrip("#").strip() or "general"
+            groups.setdefault(current, [])
+            continue
+        if s.startswith("#"):
+            continue
+        groups.setdefault(current, []).append(s)
+    return {g: pats for g, pats in groups.items() if pats}
+
+
+def _read_extra_query(path):
+    """Optional opt-in: extra ``all:...``/``cat:...`` clauses OR-ed into the API
+    query so power users can broaden what gets fetched without touching code.
+    One clause per line; blank by default. Returns a list of clause strings.
+    """
+    p = Path(path).expanduser()
+    if not p.exists():
+        return []
+    out = []
+    for raw in p.read_text(encoding="utf-8").splitlines():
+        s = raw.strip()
+        if not s or s.startswith("#"):
+            continue
+        out.append(s)
+    return out
+
+
 # Always load from external files
-REGEX_PATTERNS = _read_patterns_file(Path(__file__).parent / "patterns" / "keywords.txt")
+KEYWORD_GROUPS = _read_grouped_patterns(Path(__file__).parent / "patterns" / "keywords.txt")
+REGEX_PATTERNS = [pat for pats in KEYWORD_GROUPS.values() for pat in pats]
 AUTHOR_PATTERNS = _read_patterns_file(Path(__file__).parent / "patterns" / "authors.txt")
+EXTRA_QUERY = _read_extra_query(Path(__file__).parent / "patterns" / "extra_query.txt")
 
 if not REGEX_PATTERNS or not AUTHOR_PATTERNS:
     print("✖ No patterns loaded. Please edit patterns/keywords.txt and patterns/authors.txt")
@@ -240,6 +315,39 @@ def build_url(query, start=0, max_results=100, sort_by="submittedDate", sort_ord
         "sortOrder": sort_order,
     }
     return f"{ARXIV_API}?{urlencode(params)}"
+
+
+def _http_get(url, retries=4, base_sleep=5.0):
+    """GET with a descriptive User-Agent and exponential backoff on 429/503.
+
+    Returns response bytes, or raises RuntimeError('network-error:...') once all
+    retries are exhausted so the caller can keep state intact and try again later.
+    """
+    last_err = None
+    for attempt in range(retries):
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                return resp.read()
+        except urllib.error.HTTPError as e:
+            last_err = e
+            # Rate-limited or temporarily down: honour Retry-After, then back off.
+            if e.code in (429, 503) and attempt < retries - 1:
+                retry_after = e.headers.get("Retry-After") if e.headers else None
+                try:
+                    wait = float(retry_after) if retry_after else base_sleep * (2 ** attempt)
+                except (TypeError, ValueError):
+                    wait = base_sleep * (2 ** attempt)
+                time.sleep(min(wait, 120))
+                continue
+            break
+        except Exception as e:  # URLError, timeouts, DNS, etc.
+            last_err = e
+            if attempt < retries - 1:
+                time.sleep(base_sleep * (2 ** attempt))
+                continue
+            break
+    raise RuntimeError(f"network-error:{last_err}")
 
 
 def fetch_entries_paged(query, since_iso=None, max_per_page=100, max_pages=100):
@@ -259,12 +367,9 @@ def fetch_entries_paged(query, since_iso=None, max_per_page=100, max_pages=100):
     while page < max_pages:
         url = build_url(query, start=start, max_results=max_per_page,
                         sort_by=sort_key, sort_order="descending")
-        try:
-            with urllib.request.urlopen(url) as resp:
-                data = resp.read()
-        except Exception as e:
-            # surface a sentinel so the caller knows it was partial
-            raise RuntimeError(f"network-error:{e}")
+        if page > 0:
+            time.sleep(REQUEST_PAUSE_S)  # be polite between paged requests
+        data = _http_get(url)  # raises RuntimeError('network-error:...') on failure
         root = ET.fromstring(data)
         ns = {"a": "http://www.w3.org/2005/Atom"}
         es = root.findall("a:entry", ns)
@@ -323,29 +428,124 @@ def within_hours(iso_ts, hours):
 
 
 def keyword_score(text):
+    """Return (score, matched_groups). Each matching pattern adds 1 (unchanged
+    scoring); matched_groups names which topic groups fired, for labelling."""
     score = 0
-    for pat in REGEX_PATTERNS:
-        if re.search(pat, text, flags=re.IGNORECASE):
-            score += 1
-    return score
+    matched = []
+    for gname, pats in KEYWORD_GROUPS.items():
+        for pat in pats:
+            if re.search(pat, text, flags=re.IGNORECASE):
+                score += 1
+                if gname not in matched:
+                    matched.append(gname)
+    return score, matched
 
 
 def author_score(authors_list):
+    """Return (score, matched_authors). Author hits are weighted x2."""
     txt = " ; ".join(authors_list)
     score = 0
+    matched = []
     for pat in AUTHOR_PATTERNS:
-        if re.search(pat, txt, flags=re.IGNORECASE):
+        m = re.search(pat, txt, flags=re.IGNORECASE)
+        if m:
             score += 2  # heavier weight for author hits
-    return score
+            matched.append(m.group(0))
+    return score, matched
 
 
-def notify_macos(title, subtitle, message):
-    # Works on macOS via Notification Center
+def _osa_escape(s):
+    # Escape backslashes and double-quotes so titles with " don't break AppleScript.
+    return (s or "").replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _find_terminal_notifier():
+    """Locate terminal-notifier. shutil.which alone fails under launchd because
+    its PATH usually omits Homebrew, so check the common absolute locations too."""
+    p = shutil.which("terminal-notifier")
+    if p:
+        return p
+    for cand in ("/opt/homebrew/bin/terminal-notifier", "/usr/local/bin/terminal-notifier"):
+        if Path(cand).exists():
+            return cand
+    return None
+
+
+def notify_macos(title, subtitle, message, url=None):
+    """Show a Notification Center alert. If terminal-notifier is available, the
+    notification is clickable and opens `url` (e.g. the arXiv abstract page);
+    otherwise we fall back to osascript (whose clicks open Script Editor)."""
+    tn = _find_terminal_notifier()
+    if tn:
+        cmd = [tn, "-title", title, "-subtitle", subtitle, "-message", message]
+        if url:
+            cmd += ["-open", url]
+        try:
+            subprocess.run(cmd, check=False)
+            return
+        except Exception:
+            pass
     try:
-        script = f'display notification "{message}" with title "{title}" subtitle "{subtitle}"'
+        t, st, msg = _osa_escape(title), _osa_escape(subtitle), _osa_escape(message)
+        script = f'display notification "{msg}" with title "{t}" subtitle "{st}"'
         subprocess.run(["osascript", "-e", script], check=False)
     except Exception:
         pass
+
+
+def write_html_report(path, hits, scope_str):
+    """Write a clickable HTML digest of the hits and return the path."""
+    esc = html_lib.escape
+    cards = []
+    for score, e, kscore, ascore, arxiv_id, labels in hits:
+        title = esc(e.get("title", ""))
+        link = esc(e.get("link", ""), quote=True)
+        pdf = e.get("pdf") or ""
+        authors = esc(format_authors(e.get("authors", []), 10))
+        tags = "".join(f'<span class="tag">{esc(l)}</span>' for l in labels)
+        pdf_a = f' · <a href="{esc(pdf, quote=True)}">PDF</a>' if pdf else ""
+        updated = esc((e.get("updated", "") or "")[:10])
+        cards.append(f"""    <div class="card">
+      <div class="score">{score}</div>
+      <div class="body">
+        <a class="title" href="{link}">{title}</a>
+        <div class="tags">{tags}</div>
+        <div class="authors">{authors}</div>
+        <div class="links"><a href="{link}">abstract</a>{pdf_a} <span class="date">· {updated}</span></div>
+      </div>
+    </div>""")
+    body = "\n".join(cards) if cards else '<p class="empty">No matching papers in this window.</p>'
+    generated = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+    doc = f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>arXiv digest{esc(scope_str)}</title>
+<style>
+  :root {{ color-scheme: light dark; }}
+  body {{ font: 15px/1.5 -apple-system, system-ui, sans-serif; max-width: 820px;
+         margin: 2rem auto; padding: 0 1rem; }}
+  h1 {{ font-size: 1.4rem; margin-bottom: .2rem; }}
+  .sub {{ color: #888; margin-bottom: 1.5rem; }}
+  .card {{ display: flex; gap: .9rem; padding: .9rem 0; border-top: 1px solid #8884; }}
+  .score {{ font-weight: 700; min-width: 1.8rem; text-align: center; color: #b1361e;
+           background: #b1361e18; border-radius: 6px; height: 1.8rem; line-height: 1.8rem; }}
+  .title {{ font-weight: 600; text-decoration: none; }}
+  .title:hover {{ text-decoration: underline; }}
+  .authors {{ color: #888; font-size: .9rem; margin: .15rem 0; }}
+  .links {{ font-size: .85rem; }}
+  .date {{ color: #aaa; }}
+  .tag {{ display: inline-block; font-size: .72rem; padding: .05rem .45rem; margin-right: .3rem;
+         border-radius: 999px; background: #4a90d918; color: #4a90d9; }}
+  .empty {{ color: #888; }}
+</style></head><body>
+<h1>arXiv digest</h1>
+<div class="sub">{len(hits)} papers{esc(scope_str)} · generated {generated}</div>
+{body}
+</body></html>"""
+    path = Path(path).expanduser().resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(doc, encoding="utf-8")
+    return str(path)
 
 
 def download_pdf(url, out_dir, nice_name):
@@ -368,7 +568,21 @@ def main():
     p = argparse.ArgumentParser()
     g = p.add_mutually_exclusive_group()
     g.add_argument("--hours", type=int, default=None, help="Lookback window (hours).")
+    g.add_argument("--days", type=int, default=None, help="Lookback window (days) = --hours N*24.")
     g.add_argument("--since", type=str, default=None, help="Since date YYYY-MM-DD (local date).")
+    g.add_argument("--year", type=int, default=None,
+                   help="All of a calendar year, e.g. --year 2026 (Jan 1 → Dec 31).")
+    p.add_argument("--until", type=str, default=None,
+                   help="End date YYYY-MM-DD for a catch-up range (use with --since).")
+    p.add_argument("--no-dedupe", action="store_true",
+                   help="Show all matches in the window (don't skip already-seen papers, "
+                        "and don't touch the watch state). Use for on-demand digests.")
+    p.add_argument("--every-hours", type=int, default=20,
+                   help="Auto/scheduled mode only: skip the API call if a successful run "
+                        "happened within this many hours. Keeps hourly launchd wakes cheap "
+                        "and avoids arXiv rate-limiting. Default: 20.")
+    p.add_argument("--force", action="store_true",
+                   help="Run the API query even if a successful run happened recently.")
     p.add_argument("--out", type=str, default=str(Path.home() / "Papers" / "arxiv_hits"))
     p.add_argument("--max", type=int, default=150, help="Max results per page from API (100–200 ok).")
     p.add_argument("--notify", action="store_true", help="Show a macOS notification for each hit.")
@@ -383,8 +597,11 @@ def main():
                    help="Daily time HH:MM (24h) for the LaunchAgent. Default: 09:30.")
     p.add_argument("--label", type=str, default="com.arxiv.watcher",
                    help="LaunchAgent label (used for plist filename).")
+    p.add_argument("--plist-every-hours", type=int, default=20,
+                   help="LaunchAgent: skip the API call if a successful run happened within "
+                        "this many hours (passed as --every-hours). Default: 20.")
     p.add_argument("--hours-lookback", type=int, default=24,
-                   help="Lookback window in hours for the LaunchAgent. Default: 24.")
+                   help="(deprecated, ignored) The LaunchAgent now runs in auto mode.")
     p.add_argument("--backoff-interval", type=int, default=3600,
                    help="Extra periodic run in seconds via StartInterval (default: 3600). "
                     "Use 0 to disable. Example: 1800 for every 30 minutes.")
@@ -405,13 +622,25 @@ def main():
                    help="Truncate very long titles in console to this many chars. 0 = no limit. Default: 140.")
     p.add_argument("--report-md", type=str, default="",
                help="Optional path to write a pretty Markdown report of the run.")
+    p.add_argument("--html", type=str, default="",
+               help="Write a clickable HTML digest to this path.")
+    p.add_argument("--open", dest="open_report", action="store_true",
+               help="Open an HTML digest in your browser when done (implies --html).")
     args = p.parse_args()
+
+    # --- friendly time-window normalisation ---
+    if args.days is not None:
+        args.hours = args.days * 24
+    if args.year is not None:
+        args.since = f"{args.year:04d}-01-01"
+        if not args.until:
+            args.until = f"{args.year:04d}-12-31"
         # If user is building/ installing plist, do that first and exit.
     if args.build_plist or args.install_plist:
         plist_path = build_plist(
             schedule_hhmm=args.schedule,
             label=args.label,
-            hours_lookback=args.hours_lookback,
+            every_hours=args.plist_every_hours,
             out_dir=args.out,
             notify=(not args.no_notify),
             python_path=sys.executable,
@@ -427,16 +656,26 @@ def main():
         return
     state = _load_state()
 
+    auto_mode = args.hours is None and not args.since and not args.until
     dynamic_hours = None
-    if args.hours is None and not args.since:
-        # compute hours since last success (clamped to [23, 25])
+    if auto_mode:
         last = _parse_iso(state.get("last_success_iso"))
+        # Cheap no-op: if we already succeeded recently, don't hit the API again.
+        # This is what makes the hourly launchd wake-ups harmless and dodges 429s.
+        if last is not None and not args.force:
+            since_last_h = (_now_utc() - last).total_seconds() / 3600.0
+            if since_last_h < args.every_hours:
+                print(f"Skipping: last successful run {since_last_h:.1f}h ago "
+                      f"(< --every-hours {args.every_hours}). Use --force to override.")
+                return
+        # Look back to the last success so closing the laptop for a while and
+        # reopening still catches up (dedupe stops re-notifying). Clamp to a
+        # sane floor/ceiling: at least 23h, at most 14 days.
         if last is None:
             dynamic_hours = 24
         else:
             delta_h = (_now_utc() - last).total_seconds() / 3600.0
-            # round to nearest hour and clamp
-            dynamic_hours = max(23, min(25, int(round(delta_h))))
+            dynamic_hours = max(23, min(24 * 14, int(round(delta_h)) + 1))
         # behave as if user supplied --hours
         args.hours = dynamic_hours
 
@@ -444,33 +683,50 @@ def main():
     if args.since:
         # Interpret as 00:00 at the given date; stored as UTC-style ISO string.
         since_iso = f"{args.since}T00:00:00+00:00"
+    until_dt = None
+    if args.until:
+        # Inclusive end-of-day for the given date.
+        until_dt = dt.datetime.fromisoformat(f"{args.until}T23:59:59+00:00")
+
+    query = build_query(EXTRA_QUERY)
     seen_ids_run = set()
     hits = []
     try:
         entries_iter = fetch_entries_paged(
-            DEFAULT_QUERY,
+            query,
             since_iso=since_iso if args.since else None,
             max_per_page=args.max,
-            max_pages=500 if args.since else 3
+            max_pages=500 if args.since else 6
         )
         seen_ids_state = set(state.get("seen_ids", []))
         for e in entries_iter:
             if args.hours is not None:
                 if not within_hours(e.get("updated", ""), args.hours):
                     continue
+            # date-range catch-up: drop anything newer than --until
+            if until_dt is not None:
+                try:
+                    t = dt.datetime.fromisoformat(e.get("updated", "").replace("Z", "+00:00"))
+                    if t > until_dt:
+                        continue
+                except Exception:
+                    pass
             # derive arXiv ID and skip duplicates
             arxiv_id = (e.get("link", "").rstrip("/").split("/")[-1]) or None
             if not arxiv_id:
                 continue
-            if arxiv_id in seen_ids_state or arxiv_id in seen_ids_run:
+            if arxiv_id in seen_ids_run:
+                continue
+            if not args.no_dedupe and arxiv_id in seen_ids_state:
                 continue
 
             text = (e.get("title", "") + "\n" + e.get("summary", ""))
-            kscore = keyword_score(text)
-            ascore = author_score(e.get("authors", []))
+            kscore, kgroups = keyword_score(text)
+            ascore, amatched = author_score(e.get("authors", []))
             score = kscore + ascore
-            if score >= 1:
-                hits.append((score, e, kscore, ascore, arxiv_id))
+            labels = list(kgroups) + [f"@{a}" for a in amatched]
+            if score >= args.min_score:
+                hits.append((score, e, kscore, ascore, arxiv_id, labels))
                 seen_ids_run.add(arxiv_id)
     except RuntimeError as ex:
         if str(ex).startswith("network-error:"):
@@ -494,9 +750,9 @@ def main():
         if new_file_full:
             w.writerow([
                 "timestamp", "score_total", "score_keywords", "score_authors",
-                "title", "link", "pdf_saved_or_url", "updated", "categories", "authors"
+                "groups", "title", "link", "pdf_saved_or_url", "updated", "categories", "authors"
             ])
-        for score, e, kscore, ascore, arxiv_id in hits:
+        for score, e, kscore, ascore, arxiv_id, labels in hits:
             saved_pdf = None
             if not args.dry:
                 base_name = f'{arxiv_id}_{e.get("title", "")[:80]}'
@@ -504,23 +760,33 @@ def main():
             # shorten author list here
             authors_short = format_authors(e.get("authors", []), max_authors=3)
             w.writerow([
-                dt.datetime.now().isoformat(), score, kscore, ascore,
+                dt.datetime.now().isoformat(), score, kscore, ascore, ";".join(labels),
                 e.get("title", ""), e.get("link", ""), saved_pdf or e.get("pdf", ""),
                 e.get("updated", ""), ";".join(e.get("categories", [])), authors_short
             ])
             if args.notify:
-                subtitle = f"score {score} (kw{kscore} + au{ascore})"
+                label_str = ", ".join(labels) if labels else f"kw{kscore}+au{ascore}"
+                subtitle = f"score {score} · {label_str}"
                 message = f"[{arxiv_id}] {e.get('title', '')}"
-                notify_macos("arXiv hit", subtitle, message)
+                notify_macos("arXiv hit", subtitle, message, url=e.get("link"))
 
     # Print concise report
     # --- Pretty console report (replace your old print block with this) ---
 
-    scope_str = (
-        f" since {args.since}" if args.since
-        else f" in the last {args.hours}h" if args.hours is not None
-        else ""
-    )
+    if args.year is not None:
+        scope_str = f" in {args.year}"
+    elif args.since and args.until:
+        scope_str = f" from {args.since} to {args.until}"
+    elif args.since:
+        scope_str = f" since {args.since}"
+    elif args.until:
+        scope_str = f" up to {args.until}"
+    elif args.days is not None:
+        scope_str = f" in the last {args.days} days"
+    elif args.hours is not None:
+        scope_str = f" in the last {args.hours}h"
+    else:
+        scope_str = ""
     print(f"Found {len(hits)} matching entries{scope_str}.\n")
     
     # choose wrapping width (0 => auto)
@@ -531,14 +797,15 @@ def main():
     
     # cap console list for sanity; change 50 if you like
     to_show = hits if args.print_n == -1 else hits[:args.print_n]
-    for score, e, kscore, ascore, arxiv_id in to_show:
+    for score, e, kscore, ascore, arxiv_id, labels in to_show:
         title = e['title']
 
         # optionally truncate very long titles for console
         if args.max_title and args.max_title > 0 and len(title) > args.max_title:
             title = title[:args.max_title - 1] + "…"
-    
-        header = f"[{score} = kw{kscore}+au{ascore}] {title}"
+
+        group_str = (" {" + ", ".join(labels) + "}") if labels else ""
+        header = f"[{score} = kw{kscore}+au{ascore}]{group_str} {title}"
         link   = e['link']
         pdf    = e.get('pdf') or ""
         authors_full  = e.get('authors', [])
@@ -556,7 +823,7 @@ def main():
         # Also prepare a Markdown bullet for optional report
         md = [
             f"- **{e['title']}**",
-            f"  Score: `{score} = kw{kscore}+au{ascore}`",
+            f"  Score: `{score} = kw{kscore}+au{ascore}`" + (f" — {', '.join(labels)}" if labels else ""),
             f"  Link: {link}",
         ]
         if pdf: md.append(f"  PDF: {pdf}")
@@ -569,18 +836,32 @@ def main():
         md_path = Path(args.report_md).expanduser().resolve()
         md_path.parent.mkdir(parents=True, exist_ok=True)
         header_md = (
-            f"# arXiv Kaon Watch — {dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}\n\n"
+            f"# arXiv Watch — {dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}\n\n"
             f"Found **{len(hits)}** matching entries{scope_str}.\n\n"
         )
         md_path.write_text(header_md + "\n".join(lines_for_md) + "\n", encoding="utf-8")
         print(f"Wrote Markdown report to: {md_path}")
+
+    # Optional HTML digest (clickable). --open implies a default path.
+    html_path = args.html
+    if args.open_report and not html_path:
+        html_path = str(Path(args.out).expanduser() / "arxiv_digest.html")
+    if html_path:
+        written = write_html_report(html_path, hits, scope_str)
+        print(f"Wrote HTML digest to: {written}")
+        if args.open_report:
+            subprocess.run(["open", written], check=False)
+
+    # On-demand digests (--no-dedupe) are read-only: don't mutate the watch state.
+    if args.no_dedupe:
+        return
 
     # Persist dedupe IDs always; only advance last_success on full success
     merged = list(dict.fromkeys(state.get("seen_ids", []) + list(seen_ids_run)))
     if len(merged) > 5000:
         merged = merged[-5000:]
     state["seen_ids"] = merged
-    
+
     if not network_failed:
         state["last_success_iso"] = _now_utc().isoformat()
     else:

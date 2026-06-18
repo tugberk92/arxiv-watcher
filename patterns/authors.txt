@@ -1,3 +1,9 @@
+# Authors to follow (Python regex, case-insensitive). An author hit weighs x2.
+# Patterns allow the full first name OR an initial (collaboration papers often
+# list "T. Kitahara" rather than "Teppei Kitahara"). Lines starting with # are
+# comments. Add/remove freely.
+
+# --- originally tracked ---
 Andreas\s+J(u|ü|ue)ttner
 Andrzej\s+Buras
 Gino\s+Isidori
@@ -9,3 +15,36 @@ Marzia\s+Bordone
 Ryan\s+Hill
 Jack\s+Jenkins
 Martin\s+Gorbahn
+
+# --- kaon / flavor theory (ε'/ε, K->pi nu nu, rare decays, Vus/Vud, ChPT) ---
+(Teppei|T\.?)\s+Kitahara
+(Giancarlo|G\.?)\s+D['’]Ambrosio
+(Joachim|J\.?)\s+Brod
+(Avital|A\.?)\s+Dery
+Mitrajyoti\s+Ghosh
+(Stefan|S\.?)\s+Schacht
+(H(e|é)ctor|H\.?)\s+Gisbert
+(Antonio|A\.?)\s+Pich
+(Antonio|A\.?)\s+Rodr(i|í)guez-S(a|á)nchez
+(Chien-Yeah|C\.?-?Y\.?)\s+Seng
+(Vincenzo|V\.?)\s+Cirigliano
+
+# --- NA62 (CERN) ---
+(Giuseppe|G\.?)\s+Ruggiero
+(Cristina|C\.?)\s+Lazzeroni
+(Radoslav|R\.?)\s+Marchevski
+(Matthew|M\.?)\s+Moulson
+
+# --- KOTO (J-PARC) ---
+(Taku|T\.?)\s+Yamanaka
+(Hajime|H\.?)\s+Nanjo
+(Tadashi|T\.?)\s+Nomura
+(Nobuhiro|N\.?)\s+Shimizu
+
+# --- lattice QCD for kaons / Vus / FLAG (RBC-UKQCD, ETM) ---
+(Peter|P\.?)\s+(A\.\s+)?Boyle
+(Christopher|C\.?)\s+Kelly
+(Norman|N\.?)\s+Christ
+(Christoph|C\.?)\s+Lehner
+(Christopher|C\.?)\s+Sachrajda
+(Nazario|N\.?)\s+Tantalo

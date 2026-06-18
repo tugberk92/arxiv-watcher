@@ -1,16 +1,17 @@
-r'\bkaon(s)?\b
-\bCKM\b
-\bV[_\s]?us\b|\|?V[_\s]?us\|?
-\bNA62\b
-\bKOTO(-II)?\b
-\bKLEVER\b
-\bHIKE\b
-\bFLAG\b
-\bBNL-E865\b
-\bKLOE(?:-2)?\b
-\bKTeV\b
-\bISTRA\+
-\bNA48(?:/2)?\b
+# arxiv-watcher keyword patterns (Python regex, case-insensitive).
+#
+# Lines starting with a single  #  are comments.
+# Lines starting with  ##  start a new TOPIC GROUP. Every pattern below a
+# header belongs to that group, and matched group names are shown in the
+# notification / report (e.g.  {kaon, stats}).
+#
+# Each matching pattern adds +1 to a paper's score. Edit freely — no need to
+# touch the Python script. Which papers get *fetched* is controlled by
+# CORE_TERMS in arxiv_watcher.py (kept focused on purpose); widen it with
+# patterns/extra_query.txt if you want a broader net.
+
+## kaon
+\bkaon(s)?\b
 \bK[_ ]?L\b
 \bK[_ ]?S\b
 \bK[_\s]?(e|mu)(2|3|4)\b
@@ -23,3 +24,53 @@ K_{\s*pi\s*(0|2|3|4)\s*}
 K_{\s*pi(?:nu|ν)(?:nu|ν)\s*}
 \bK\+\s*->\s*\\?pi\+\s*\w*
 \bK\^\s*[-+0-9]
+
+## ckm
+\bCKM\b
+\bV[_\s]?us\b|\|?V[_\s]?us\|?
+\bV[_\s]?ud\b
+\bCabibbo\b
+\bunitarity\s+triangle\b
+\bfirst[- ]row\s+unitarity\b
+
+## fixed-target
+\bNA62\b
+\bKOTO(-II)?\b
+\bKLEVER\b
+\bHIKE\b
+\bNA48(?:/2)?\b
+\bNA64\b
+\bISTRA\+
+\bBNL-E865\b
+\bKTeV\b
+\bKLOE(?:-2)?\b
+\bPIENU\b
+\bPIONEER\b
+\brare\s+kaon\b
+\blepton\s+(flavou?r\s+)?universality\b
+\bfixed[- ]target\b
+
+## stats
+\bprofile\s+likelihood\b
+\bprofile-likelihood\b
+\bunfolding\b
+\bCLs\b
+\bFeldman[- ]Cousins\b
+\bnuisance\s+parameter(s)?\b
+\bsystematic\s+uncertaint(y|ies)\b
+\bgoodness[- ]of[- ]fit\b
+\bhypothesis\s+test(ing)?\b
+\bfrequentist\b
+\bBayesian\b
+\bRooFit\b
+\bRooStats\b
+\bmaximum\s+likelihood\b
+
+## analysis
+\bbranching\s+(ratio|fraction)\b
+\bform\s+factor(s)?\b
+\bamplitude\s+analysis\b
+\bDalitz\b
+\bpartial\s+wave\b
+\bglobal\s+fit\b
+\bFLAG\b
