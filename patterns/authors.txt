@@ -1,50 +1,54 @@
 # Authors to follow (Python regex, case-insensitive). An author hit weighs x2.
-# Patterns allow the full first name OR an initial (collaboration papers often
-# list "T. Kitahara" rather than "Teppei Kitahara"). Lines starting with # are
-# comments. Add/remove freely.
+#
+# Pattern shape:  \b(FullFirst|F\.?)(\s+[A-Z]\.)*\s+Surname\b
+#   - matches the full first name OR an initial ("Teppei Kitahara" or "T. Kitahara")
+#   - (\s+[A-Z]\.)* allows middle initials ("C. T. Sachrajda", "A. J. Buras")
+#   - the trailing \b stops a surname matching a longer one
+#     (so "J. Brod" does NOT hit "J. Brodzicka")
+# Lines starting with # are comments. Copy the shape to add your own people.
 
 # --- originally tracked ---
-Andreas\s+J(u|ü|ue)ttner
-Andrzej\s+Buras
-Gino\s+Isidori
-Yuval\s+Grossman
-Emmanuel\s+Stamou
-Thomas\s+Blum
-Marc\s+Knecht
-Marzia\s+Bordone
-Ryan\s+Hill
-Jack\s+Jenkins
-Martin\s+Gorbahn
+\b(Andreas|A\.?)(\s+[A-Z]\.)*\s+J(u|ü|ue)ttner\b
+\b(Andrzej|A\.?)(\s+[A-Z]\.)*\s+Buras\b
+\b(Gino|G\.?)(\s+[A-Z]\.)*\s+Isidori\b
+\b(Yuval|Y\.?)(\s+[A-Z]\.)*\s+Grossman\b
+\b(Emmanuel|E\.?)(\s+[A-Z]\.)*\s+Stamou\b
+\b(Thomas|T\.?)(\s+[A-Z]\.)*\s+Blum\b
+\b(Marc|M\.?)(\s+[A-Z]\.)*\s+Knecht\b
+\b(Marzia|M\.?)(\s+[A-Z]\.)*\s+Bordone\b
+\b(Ryan|R\.?)(\s+[A-Z]\.)*\s+Hill\b
+\b(Jack|J\.?)(\s+[A-Z]\.)*\s+Jenkins\b
+\b(Martin|M\.?)(\s+[A-Z]\.)*\s+Gorbahn\b
 
 # --- kaon / flavor theory (ε'/ε, K->pi nu nu, rare decays, Vus/Vud, ChPT) ---
-(Teppei|T\.?)\s+Kitahara
-(Giancarlo|G\.?)\s+D['’]Ambrosio
-(Joachim|J\.?)\s+Brod
-(Avital|A\.?)\s+Dery
-Mitrajyoti\s+Ghosh
-(Stefan|S\.?)\s+Schacht
-(H(e|é)ctor|H\.?)\s+Gisbert
-(Antonio|A\.?)\s+Pich
-(Antonio|A\.?)\s+Rodr(i|í)guez-S(a|á)nchez
-(Chien-Yeah|C\.?-?Y\.?)\s+Seng
-(Vincenzo|V\.?)\s+Cirigliano
+\b(Teppei|T\.?)(\s+[A-Z]\.)*\s+Kitahara\b
+\b(Giancarlo|G\.?)(\s+[A-Z]\.)*\s+D['’]Ambrosio\b
+\b(Joachim|J\.?)(\s+[A-Z]\.)*\s+Brod\b
+\b(Avital|A\.?)(\s+[A-Z]\.)*\s+Dery\b
+\b(Mitrajyoti|M\.?)(\s+[A-Z]\.)*\s+Ghosh\b
+\b(Stefan|S\.?)(\s+[A-Z]\.)*\s+Schacht\b
+\b(H(e|é)ctor|H\.?)(\s+[A-Z]\.)*\s+Gisbert\b
+\b(Antonio|A\.?)(\s+[A-Z]\.)*\s+Pich\b
+\b(Antonio|A\.?)(\s+[A-Z]\.)*\s+Rodr(i|í)guez-S(a|á)nchez\b
+\b(Chien-Yeah|C\.?-?Y\.?)(\s+[A-Z]\.)*\s+Seng\b
+\b(Vincenzo|V\.?)(\s+[A-Z]\.)*\s+Cirigliano\b
 
 # --- NA62 (CERN) ---
-(Giuseppe|G\.?)\s+Ruggiero
-(Cristina|C\.?)\s+Lazzeroni
-(Radoslav|R\.?)\s+Marchevski
-(Matthew|M\.?)\s+Moulson
+\b(Giuseppe|G\.?)(\s+[A-Z]\.)*\s+Ruggiero\b
+\b(Cristina|C\.?)(\s+[A-Z]\.)*\s+Lazzeroni\b
+\b(Radoslav|R\.?)(\s+[A-Z]\.)*\s+Marchevski\b
+\b(Matthew|M\.?)(\s+[A-Z]\.)*\s+Moulson\b
 
 # --- KOTO (J-PARC) ---
-(Taku|T\.?)\s+Yamanaka
-(Hajime|H\.?)\s+Nanjo
-(Tadashi|T\.?)\s+Nomura
-(Nobuhiro|N\.?)\s+Shimizu
+\b(Taku|T\.?)(\s+[A-Z]\.)*\s+Yamanaka\b
+\b(Hajime|H\.?)(\s+[A-Z]\.)*\s+Nanjo\b
+\b(Tadashi|T\.?)(\s+[A-Z]\.)*\s+Nomura\b
+\b(Nobuhiro|N\.?)(\s+[A-Z]\.)*\s+Shimizu\b
 
 # --- lattice QCD for kaons / Vus / FLAG (RBC-UKQCD, ETM) ---
-(Peter|P\.?)\s+(A\.\s+)?Boyle
-(Christopher|C\.?)\s+Kelly
-(Norman|N\.?)\s+Christ
-(Christoph|C\.?)\s+Lehner
-(Christopher|C\.?)\s+Sachrajda
-(Nazario|N\.?)\s+Tantalo
+\b(Peter|P\.?)(\s+[A-Z]\.)*\s+Boyle\b
+\b(Christopher|C\.?)(\s+[A-Z]\.)*\s+Kelly\b
+\b(Norman|N\.?)(\s+[A-Z]\.)*\s+Christ\b
+\b(Christoph|C\.?)(\s+[A-Z]\.)*\s+Lehner\b
+\b(Christopher|C\.?)(\s+[A-Z]\.)*\s+Sachrajda\b
+\b(Nazario|N\.?)(\s+[A-Z]\.)*\s+Tantalo\b
