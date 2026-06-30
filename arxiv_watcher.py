@@ -332,7 +332,7 @@ def _http_get(url, retries=4, base_sleep=5.0):
         except urllib.error.HTTPError as e:
             last_err = e
             # Rate-limited or temporarily down: honour Retry-After, then back off.
-            if e.code in (429, 503) and attempt < retries - 1:
+            if e.code in (429, 500, 502, 503, 504) and attempt < retries - 1:
                 retry_after = e.headers.get("Retry-After") if e.headers else None
                 try:
                     wait = float(retry_after) if retry_after else base_sleep * (2 ** attempt)
